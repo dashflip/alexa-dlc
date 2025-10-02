@@ -1,12 +1,12 @@
 /* Express-based Alexa endpoint for Vercel (no AWS needed) */
 const express = require('express');
-
 const Alexa = require('ask-sdk-core');
 const { ExpressAdapter } = require('ask-sdk-express-adapter');
 
 const OPENAI_MODEL = 'gpt-4o-mini';
+const VERIFY_SIGNATURES = false; // set to true after everything works
 
-// ---- OpenAI call (keep fast & short) ----
+// ---------- OpenAI call (fast & short) ----------
 async function askOpenAI(prompt, history = []) {
   const key = process.env.OPENAI_API_KEY;
   if (!key) throw new Error('Missing OPENAI_API_KEY');
@@ -18,12 +18,12 @@ async function askOpenAI(prompt, history = []) {
   ];
 
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 5000); // Alexa end-to-end ~8s
+  const timeout = setTimeout(() => controller.abort(), 5000); // keep < ~8s Alexa limit
 
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: OPENAI_MODEL, messages, temperature: 0.3, max_tokens: 180 }),
       signal: controller.signal
     });
@@ -31,11 +31,11 @@ async function askOpenAI(prompt, history = []) {
     const data = await res.json();
     return (data.choices?.[0]?.message?.content || '').trim();
   } finally {
-    clearTimeout(t);
+    clearTimeout(timeout);
   }
 }
 
-// ---- APL helpers (for Echo Show) ----
+// ---------- APL helpers (Echo Show) ----------
 function supportsAPL(h) {
   return !!h.requestEnvelope.context?.System?.device?.supportedInterfaces?.['Alexa.Presentation.APL'];
 }
@@ -44,11 +44,14 @@ function renderAPL(prompt, answer) {
     type: 'Alexa.Presentation.APL.RenderDocument',
     token: 'screen',
     document: {
-      type: 'APL', version: '1.7',
+      type: 'APL',
+      version: '1.7',
       mainTemplate: {
         parameters: ['payload'],
         items: [{
-          type: 'Container', paddingLeft: '24dp', paddingTop: '24dp',
+          type: 'Container',
+          paddingLeft: '24dp',
+          paddingTop: '24dp',
           items: [
             { type: 'Text', text: 'Dora', fontSize: '36dp', fontWeight: '700' },
             { type: 'Text', text: 'You said:', fontSize: '22dp', color: '#888' },
@@ -63,30 +66,40 @@ function renderAPL(prompt, answer) {
   };
 }
 
-// ---- Alexa handlers ----
+// ---------- Alexa handlers ----------
 const LaunchRequestHandler = {
-  canHandle(h){ return h.requestEnvelope.request.type === 'LaunchRequest'; },
-  handle(h){ return h.responseBuilder.speak("Hi, I'm Dora. Ask me anything.").reprompt("What should we talk about?").getResponse(); }
+  canHandle(h) { return h.requestEnvelope.request.type === 'LaunchRequest'; },
+  handle(h) {
+    console.log('[LaunchRequest]');
+    return h.responseBuilder
+      .speak("Hi, I'm Dora. Ask me anything.")
+      .reprompt("What should we talk about?")
+      .getResponse();
+  }
 };
 
 const FreeFormIntentHandler = {
-  canHandle(h){
+  canHandle(h) {
     const r = h.requestEnvelope.request;
     return r.type === 'IntentRequest' && r.intent.name === 'FreeFormIntent';
   },
-  async handle(h){
+  async handle(h) {
     const slots = h.requestEnvelope.request.intent.slots || {};
     const userText = (slots.q?.value) || (slots.dora?.value) || 'hello';
+    console.log('[FreeFormIntent]', userText);
 
-    // Keep it quick (we're not doing progressive response on HTTPS yet)
     const attrs = h.attributesManager.getSessionAttributes();
     const history = (attrs.history || []).slice(-2);
 
     let answer;
-    try { answer = await askOpenAI(userText, history); }
-    catch(e){ console.log('OpenAI error:', e.message); answer = "Sorry, I couldn’t reach the assistant right now."; }
+    try {
+      answer = await askOpenAI(userText, history);
+    } catch (e) {
+      console.log('OpenAI error:', e.message);
+      answer = "Sorry, I couldn’t reach the assistant right now.";
+    }
 
-    attrs.history = [...(attrs.history || []), { role:'user', content:userText }, { role:'assistant', content:answer }];
+    attrs.history = [...(attrs.history || []), { role: 'user', content: userText }, { role: 'assistant', content: answer }];
     h.attributesManager.setSessionAttributes(attrs);
 
     const rb = h.responseBuilder.speak(answer).reprompt("What next?");
@@ -96,31 +109,36 @@ const FreeFormIntentHandler = {
 };
 
 const ErrorHandler = {
-  canHandle(){ return true; },
-  handle(h, e){ console.log('Error:', e.stack || e); return h.responseBuilder.speak("Sorry, something went wrong.").getResponse(); }
+  canHandle() { return true; },
+  handle(h, e) {
+    console.log('Error:', e.stack || e);
+    return h.responseBuilder.speak("Sorry, something went wrong.").getResponse();
+  }
 };
 
-// ---- Build Alexa skill & Express adapter (does signature+timestamp verification) ----
+// ---------- Build skill & Express adapter ----------
 const skill = Alexa.SkillBuilders.custom()
   .withApiClient(new Alexa.DefaultApiClient())
   .addRequestHandlers(LaunchRequestHandler, FreeFormIntentHandler)
   .addErrorHandlers(ErrorHandler)
   .create();
 
-// const adapter = new ExpressAdapter(skill, true, true); // verification enabled
-const adapter = new ExpressAdapter(skill, false, false); // TEMP: verification OFF (we'll turn back on later)
+const adapter = new ExpressAdapter(skill, VERIFY_SIGNATURES, VERIFY_SIGNATURES); // verification OFF for now
 
 const app = express();
-app.head('/', (req, res) => res.status(200).end());
-app.get('/',  (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
+const ROUTE = '/api/alexa';              // important on Vercel
+const ROUTES = [ROUTE, '/'];             // handle both just in case
 
-app.get('/', (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
-// Do NOT add body parsers; adapter registers its own
-//app.post('/', adapter.getRequestHandlers());
-app.post('/', (req, res, next) => {
-  console.log('[HIT] POST / at', new Date().toISOString());
-  next();
-}, adapter.getRequestHandlers());
+// health checks
+app.head(ROUTES, (_req, res) => res.status(200).end());
+app.get(ROUTES,  (_req, res) => res.status(200).send('OK — Alexa endpoint is at POST /api/alexa'));
 
-// Vercel expects the Express app directly:
+// request handler with a hit log (don’t add your own body parser)
+app.post(
+  ROUTES,
+  (req, _res, next) => { console.log('[HIT]', req.method, req.url, new Date().toISOString()); next(); },
+  adapter.getRequestHandlers()
+);
+
+// Vercel expects the Express app directly
 module.exports = app;
