@@ -107,9 +107,11 @@ const skill = Alexa.SkillBuilders.custom()
   .addErrorHandlers(ErrorHandler)
   .create();
 
-const adapter = new ExpressAdapter(skill, true, true); // verification enabled
-const app = express();
+// const adapter = new ExpressAdapter(skill, true, true); // verification enabled
+const adapter = new ExpressAdapter(skill, false, false); // TEMP: verification OFF (we'll turn back on later)
 
+const app = express();
+app.get('/', (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
 // Do NOT add body parsers; adapter registers its own
 app.post('/', adapter.getRequestHandlers());
 
