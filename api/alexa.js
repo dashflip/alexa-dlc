@@ -113,7 +113,14 @@ const adapter = new ExpressAdapter(skill, false, false); // TEMP: verification O
 const app = express();
 app.get('/', (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
 // Do NOT add body parsers; adapter registers its own
-app.post('/', adapter.getRequestHandlers());
-
+//app.post('/', adapter.getRequestHandlers());
+app.post(
+   '/',
+   (req, res, next) => {
+     console.log('[HIT] POST / at', new Date().toISOString());
+     next();
+   },
+   adapter.getRequestHandlers()
+ );
 // Vercel serverless export:
 module.exports = serverless(app);
