@@ -1,6 +1,6 @@
 /* Express-based Alexa endpoint for Vercel (no AWS needed) */
 const express = require('express');
-const serverless = require('serverless-http');
+
 const Alexa = require('ask-sdk-core');
 const { ExpressAdapter } = require('ask-sdk-express-adapter');
 
@@ -111,16 +111,16 @@ const skill = Alexa.SkillBuilders.custom()
 const adapter = new ExpressAdapter(skill, false, false); // TEMP: verification OFF (we'll turn back on later)
 
 const app = express();
+app.head('/', (req, res) => res.status(200).end());
+app.get('/',  (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
+
 app.get('/', (req, res) => res.status(200).send('OK — Alexa endpoint is at POST /'));
 // Do NOT add body parsers; adapter registers its own
 //app.post('/', adapter.getRequestHandlers());
-app.post(
-   '/',
-   (req, res, next) => {
-     console.log('[HIT] POST / at', new Date().toISOString());
-     next();
-   },
-   adapter.getRequestHandlers()
- );
-// Vercel serverless export:
-module.exports = serverless(app);
+app.post('/', (req, res, next) => {
+  console.log('[HIT] POST / at', new Date().toISOString());
+  next();
+}, adapter.getRequestHandlers());
+
+// Vercel expects the Express app directly:
+module.exports = app;
